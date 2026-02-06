@@ -2013,12 +2013,29 @@ class DailyLimitPlugin(star.Star):
         if not self._validate_redis_connection():
             event.stop_event()
             return False
-        
-        if not req.prompt.strip() or self._should_skip_message(event.message_str):
+
+        # 1. 检查是否在忽略名单中
+        if self._should_skip_message(event.message_str):
             event.stop_event()
             return False
-            
+
+        # 2. 检查是否有文字内容
+        has_text = bool(req.prompt and req.prompt.strip())
+
+        # 3. 检查是否有图片 
+        has_req_image = False
+        if hasattr(req, 'images') and req.images and len(req.images) > 0:
+            has_req_image = True
+
+        has_message_obj = hasattr(event, 'message_obj') and event.message_obj is not None
+
+        if not has_text and not has_req_image and not has_message_obj:
+            self._log_warning(f"拦截空消息: 用户 {event.get_sender_id()}")
+            event.stop_event()
+            return False
+
         return True
+
 
     def _is_exempt_user(self, user_id: int) -> bool:
         """检查用户是否为豁免用户"""
@@ -2185,19 +2202,9 @@ class DailyLimitPlugin(star.Star):
 
     async def _send_reminder(self, event: AstrMessageEvent, user_id: int, 
                            group_id: Optional[int], remaining: int):
-        """发送剩余次数提醒"""
-        if group_id is not None:
-            user_name = event.get_sender_name()
-            if self._get_group_mode(group_id) == "shared":
-                reminder_msg = f"💡 提醒：本群组剩余AI调用次数为 {remaining} 次"
-            else:
-                reminder_msg = f"💡 提醒：您在本群组剩余AI调用次数为 {remaining} 次"
-            await event.send(
-                MessageChain().at(user_name, user_id).message(reminder_msg)
-            )
-        else:
-            reminder_msg = f"💡 提醒：您剩余AI调用次数为 {remaining} 次"
-            await event.send(MessageChain().message(reminder_msg))
+        """发送剩余次数提醒 - 已手动禁用"""
+        # pass 表示跳过，不执行任何操作
+        pass 
 
     def _increment_usage(self, user_id: int, group_id: Optional[int]):
         """
@@ -2255,29 +2262,23 @@ class DailyLimitPlugin(star.Star):
         if self.anti_abuse_enabled:
             abuse_result = self._detect_abuse_behavior(user_id, time.time())
             if abuse_result["is_abuse"]:
-                # 检测到异常使用行为，自动限制用户
                 await self._handle_abuse_detected(event, user_id, abuse_result)
                 return False
-
         # 获取群组信息
         group_id = None
         if event.get_message_type() == MessageType.GROUP_MESSAGE:
             group_id = event.get_group_id()
-
         # 获取使用信息
         usage, limit, usage_type = self._get_usage_info(user_id, group_id)
-
         # 检查限制
         if usage >= limit:
             await self._handle_limit_exceeded(event, user_id, group_id, usage, limit)
             return False
-
         # 发送提醒
         remaining = limit - usage
         if remaining in [1, 3, 5]:
             await self._send_reminder(event, user_id, group_id, remaining)
-
-        # 增加使用次数
+        # 增加使用次数 
         self._increment_usage(user_id, group_id)
         self._record_usage(user_id, group_id, "llm_request")
         
@@ -4821,27 +4822,6 @@ class DailyLimitPlugin(star.Star):
         except Exception as e:
             self._handle_error(e, "查看版本信息")
             event.set_result(MessageEventResult().message("❌ 获取版本信息失败"))
-
-    # ASCII艺术字
-    ASCII_ART = """
- ██████████     █████████   █████ █████       █████ █████    █████       █████ ██████   ██████ █████ ███████████
-░░███░░░░███   ███░░░░░███ ░░███ ░░███       ░░███ ░░███    ░░███       ░░███ ░░██████ ██████ ░░███ ░█░░░███░░░█
- ░███   ░░███ ░███    ░███  ░███  ░███        ░░███ ███      ░███        ░███  ░███░█████░███  ░███ ░   ░███  ░ 
- ░███    ░███ ░███████████  ░███  ░███         ░░█████       ░███        ░███  ░███░░███ ░███  ░███     ░███    
- ░███    ░███ ░███░░░░░███  ░███  ░███          ░░███        ░███        ░███  ░███ ░░░  ░███  ░███     ░███    
- ░███    ███  ░███    ░███  ░███  ░███      █    ░███        ░███      █ ░███  ░███      ░███  ░███     ░███    
- ██████████   █████   █████ █████ ███████████    █████       ███████████ █████ █████     █████ █████    █████   
-░░░░░░░░░░   ░░░░░   ░░░░░ ░░░░░ ░░░░░░░░░░░    ░░░░░       ░░░░░░░░░░░ ░░░░░ ░░░░░     ░░░░░ ░░░░░    ░░░░░    
-                                                                                                                
-                                                                                                                                                                                                      
-                                       每日调用限制插件 v2.8.6                       
-                                  作者: left666 & Sakura520222                  
-    """
-
-    @filter.on_astrbot_loaded()
-    async def on_astrbot_loaded(self):
-        """AstrBot初始化完成时触发"""
-        self._log_info("{}", self.ASCII_ART)
 
     async def terminate(self):
         """插件终止时清理资源"""
